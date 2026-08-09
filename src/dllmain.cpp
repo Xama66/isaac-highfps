@@ -287,6 +287,97 @@ Track* FindTrack(uintptr_t e, bool create) {
     return nullptr;   // pathological clustering: skip rather than stall
 }
 
+// ------------------------------------------------------------- room camera
+// The camera is a separate object (Game -> Room -> Camera, offsets in offsets.h), updated at
+// 60 Hz, and the render reads it every frame - so uncapped it holds for three frames and then
+// jumps, which is the big-room judder.
+//
+// Neither interpolating nor extrapolating the camera's OWN motion feels right: the camera
+// eases toward the player (0.1 factor at Camera+0x90), so extrapolating its decelerating steps
+// overshoots and snaps back (a ~60 Hz shiver), and interpolating renders it a frame or two
+// behind the extrapolated player, so the view visibly lags the input.
+//
+// The fix is to stop treating the camera as an independent thing to smooth and instead LOCK
+// THE PLAYER TO THE SCREEN. While the camera is scrolling it moves one-for-one with the
+// player, so we shift it by the player's OWN sub-frame movement (g_playerRenderDelta, captured
+// in PreviewPass). The player then sits at a fixed screen position frame to frame: smooth AND
+// with no added lag, because the camera follows the player's own extrapolation exactly. On an
+// axis where the camera is NOT scrolling (the dead zone in the middle of a big room) we hold it
+// still, so a player moving inside the dead zone slides across the screen as it should. Rolled
+// back to the authoritative value before every tick, like the entity previews.
+struct CamTrack {
+    float prev[2];   // authoritative camera position two real frames ago
+    float cur[2];    // authoritative camera position at the last real frame
+    bool  applied;   // a preview currently sits in the live field
+    bool  valid;     // prev/cur hold two consecutive real samples
+} g_cam = {};
+
+// The player's sub-frame movement this frame (rendered position minus authoritative), captured
+// while PreviewPass predicts the player and consumed by PreviewCamera to keep him screen-locked.
+// Zero on a real frame and whenever there is no player, so the camera stays authoritative.
+float g_playerRenderDelta[2] = {0.0f, 0.0f};
+
+float* CamField() {
+    uintptr_t game = GameObj();
+    if (game < 0x10000) return nullptr;
+    uintptr_t room = *reinterpret_cast<uintptr_t*>(game + isaac::kRoomInGame);
+    if (room < 0x10000) return nullptr;
+    uintptr_t cam = *reinterpret_cast<uintptr_t*>(room + isaac::kCameraInRoom);
+    if (cam < 0x10000) return nullptr;
+    return reinterpret_cast<float*>(cam + isaac::kCamPosition);
+}
+
+// A camera step larger than this is a room change or a hard snap, not a scroll, and must not
+// be smeared across. Normal fast scrolling is a few units per 60 Hz frame; a room change is
+// hundreds - so this is deliberately far above the entity threshold, which is tuned for a
+// single tick of entity movement, not for how fast the whole view can travel.
+constexpr float kCamMaxStepSq = 120.0f * 120.0f;
+
+// Restore the authoritative camera position, so the engine's next tick eases from it and not
+// from an extrapolated frame we left behind (which would bake drift into every tick).
+void RollbackCamera() {
+    if (!g_cam.applied) return;
+    if (float* c = CamField()) { c[0] = g_cam.cur[0]; c[1] = g_cam.cur[1]; }
+    g_cam.applied = false;
+}
+
+// Sample the authoritative camera once per real (60 Hz) frame, right after the engine tick.
+// Sampled every real frame, not only on the logic phase: the camera advances on both phases
+// (the engine's own half-step moves it), so a 30 Hz sample would miss half of its motion.
+void SampleCamera() {
+    float* c = CamField();
+    if (!c) { g_cam.valid = false; g_cam.applied = false; return; }
+    bool fresh = !g_cam.valid;
+    if (!fresh) {
+        const float dx = c[0] - g_cam.cur[0], dy = c[1] - g_cam.cur[1];
+        if (dx * dx + dy * dy > kCamMaxStepSq) fresh = true;   // room change / snap
+    }
+    g_cam.prev[0] = fresh ? c[0] : g_cam.cur[0];
+    g_cam.prev[1] = fresh ? c[1] : g_cam.cur[1];
+    g_cam.cur[0] = c[0];
+    g_cam.cur[1] = c[1];
+    g_cam.valid = true;
+    g_cam.applied = false;   // authoritative now; nothing to roll back
+}
+
+// Lock the player to the screen: on any axis the camera is actually scrolling on, shift it by
+// the player's own sub-frame movement so the player holds a fixed screen position (smooth and
+// lag-free - the camera tracks the player's own extrapolation, it does not trail it). On an
+// axis in the dead zone (camera not scrolling this frame) hold still, so a player moving inside
+// the dead zone slides across the screen as it should. cur is the authoritative value the tick
+// eases from, restored by RollbackCamera.
+void PreviewCamera(float /*unused*/) {
+    if (!g_cam.valid) return;
+    float* c = CamField();
+    if (!c) return;
+    g_cam.applied = true;
+    const float dx = g_cam.cur[0] - g_cam.prev[0];
+    const float dy = g_cam.cur[1] - g_cam.prev[1];
+    constexpr float kScrollEpsSq = 0.05f * 0.05f;
+    c[0] = g_cam.cur[0] + (dx * dx > kScrollEpsSq ? g_playerRenderDelta[0] : 0.0f);
+    c[1] = g_cam.cur[1] + (dy * dy > kScrollEpsSq ? g_playerRenderDelta[1] : 0.0f);
+}
+
 // Byte-for-byte what the engine does at 0x9551F0 before an authoritative tick.
 void RollbackPreviews() {
     ForEachEntity([](uintptr_t e) {
@@ -298,6 +389,7 @@ void RollbackPreviews() {
             *reinterpret_cast<uint8_t*>(e + isaac::kEntPreviewFlag) = 0;
         }
     });
+    RollbackCamera();
 }
 
 // We do NOT call the engine's Interpolate for these frames. Its per-type overrides are
@@ -311,6 +403,7 @@ void RollbackPreviews() {
 // theirs is a per-1/60 displacement, while everything else is per-1/30. Each therefore
 // gets its own share of its own interval.
 void PreviewPass(float worldAlpha, float playerAlpha) {
+    g_playerRenderDelta[0] = g_playerRenderDelta[1] = 0.0f;   // no player found -> camera holds
     ForEachEntity([&](uintptr_t e) {
         if (*reinterpret_cast<uint64_t*>(e + isaac::kEntFlags) & isaac::kFlagNoInterpolate)
             return;
@@ -331,6 +424,9 @@ void PreviewPass(float worldAlpha, float playerAlpha) {
             const auto* vel = reinterpret_cast<float*>(e + isaac::kEntVelocity);
             pos[0] = backup[0] + step * vel[0];
             pos[1] = backup[1] + step * vel[1];
+            // Hand the camera the exact sub-frame move so it can keep the player screen-locked.
+            g_playerRenderDelta[0] = pos[0] - backup[0];
+            g_playerRenderDelta[1] = pos[1] - backup[1];
             return;
         }
 
@@ -343,6 +439,10 @@ void PreviewPass(float worldAlpha, float playerAlpha) {
         pos[0] = t->prev[0] + worldAlpha * (t->cur[0] - t->prev[0]);
         pos[1] = t->prev[1] + worldAlpha * (t->cur[1] - t->prev[1]);
     });
+
+    // The camera rides the player's timeline (extrapolated), so on a real frame this is
+    // called with playerAlpha == 0 and the camera stays at its authoritative position.
+    PreviewCamera(playerAlpha);
 }
 
 // Called right after an authoritative tick, when positions are real and no preview is
@@ -734,6 +834,9 @@ int __cdecl HookedUpdateWrapper() {
             // or transition the gameplay clock stands still while sprites and entities
             // may well keep moving, and skipping the sample would freeze them solid.
             if (logicPhase) SampleTracks();
+            // The camera advances on every real frame (60 Hz), not only the logic phase, so
+            // it is sampled here unconditionally - a 30 Hz sample would miss half its motion.
+            SampleCamera();
 
             // This frame gets rendered too, so it has to follow the same rule as the
             // intermediate ones. Left alone it would show the engine's own half-step
@@ -1228,17 +1331,41 @@ bool InstallFileCache() {
         if (HMODULE crt = GetModuleHandleA("ucrtbase.dll"))
             g_gameErrno = reinterpret_cast<int*(__cdecl*)()>(GetProcAddress(crt, "_errno"));
 
-    g_realAccess = reinterpret_cast<AccessFn>(
-        HookImport("api-ms-win-crt-filesystem-l1-1-0.dll", "_access",
-                   reinterpret_cast<void*>(&HookedAccess)));
-
-    void* orig = nullptr;
-    const int n = HookImportEverywhere("GetFileAttributesExW",
-                                       reinterpret_cast<void*>(&HookedGetFileAttrExW), &orig);
-    if (orig) g_realGetFileAttrExW = reinterpret_cast<GetFileAttrExW_t>(orig);
-    if (!g_realGetFileAttrExW)   // nobody imported it by name; go straight to the export
+    // Resolve the real targets BEFORE redirecting a single import slot. Both hooks call
+    // through their g_real* pointer on their very first line, and HookImportEverywhere below
+    // walks every loaded module - so the instant its first slot is swapped, any
+    // GetFileAttributesExW call anywhere in the process is already entering our hook. Setting
+    // the pointer only after that walk left a window the width of the whole module list in
+    // which those calls dispatched through a null pointer: an intermittent c0000005 at
+    // startup, a jump to address 0, "one launch in ten". (hyaroz's crash, confirmed from a
+    // full dump - never the torn instruction the thread-freeze was built for.)
+    //
+    // Resolve GetFileAttributesExW from KERNELBASE, not kernel32. kernel32's export is a thin
+    // stub that jumps through kernel32's OWN import slot for the function, and
+    // HookImportEverywhere patches that slot too. Pointing g_real at the kernel32 stub - or at
+    // any module's IAT "original", which can equally be that stub - makes our hook call itself
+    // forever: ~1 MB of native recursion, a stack-overflow crash the moment a call comes in.
+    // KERNELBASE holds the actual implementation; it reaches ntdll directly and never
+    // re-enters us. Confirmed from a full dump: g_real was kernel32!GetFileAttributesExW and
+    // winmm+0x23b9 appeared ~95x on the faulting stack.
+    g_realGetFileAttrExW = reinterpret_cast<GetFileAttrExW_t>(
+        GetProcAddress(GetModuleHandleA("kernelbase.dll"), "GetFileAttributesExW"));
+    if (!g_realGetFileAttrExW)   // pre-Win8 has the real implementation in kernel32
         g_realGetFileAttrExW = reinterpret_cast<GetFileAttrExW_t>(
             GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetFileAttributesExW"));
+    if (HMODULE crt = GetModuleHandleA("ucrtbase.dll"))
+        g_realAccess = reinterpret_cast<AccessFn>(GetProcAddress(crt, "_access"));
+
+    // _access from ucrtbase is the real implementation (HookImport only swaps the exe's one
+    // slot, never ucrtbase's internals), so its IAT original is safe to keep.
+    if (void* a = HookImport("api-ms-win-crt-filesystem-l1-1-0.dll", "_access",
+                             reinterpret_cast<void*>(&HookedAccess)))
+        g_realAccess = reinterpret_cast<AccessFn>(a);
+
+    // Patch every module's slot. We deliberately do NOT adopt its "original" as g_real: that
+    // original can be the kernel32 stub above, which routes straight back into this hook.
+    const int n = HookImportEverywhere("GetFileAttributesExW",
+                                       reinterpret_cast<void*>(&HookedGetFileAttrExW), nullptr);
 
     Log("file cache: GetFileAttributesExW patched in %d import slots", n);
     return g_realGetFileAttrExW != nullptr;
@@ -1658,15 +1785,18 @@ bool InstallLuaGate() {
     if (!g_luaPushInt || !g_luaSetGlobal)
         Log("[warn] lua_pushinteger/lua_setglobal missing - mods cannot detect the native part");
 
-    g_realPcallk = reinterpret_cast<LuaPcallkFn>(
-        HookImport("Lua5.3.3r.dll", "lua_pcallk", reinterpret_cast<void*>(&HookedPcallk)));
-    if (!g_realPcallk) return false;
-    g_realCallk = reinterpret_cast<LuaCallkFn>(
-        HookImport("Lua5.3.3r.dll", "lua_callk", reinterpret_cast<void*>(&HookedCallk)));
-    if (!g_realCallk) {
+    // Same ordering rule as the file cache above: resolve the real functions from the export
+    // table BEFORE swapping the import slots, so a lua_pcallk/lua_callk that lands the instant
+    // a slot changes goes to the real function, never through a null pointer.
+    g_realPcallk = reinterpret_cast<LuaPcallkFn>(GetProcAddress(lua, "lua_pcallk"));
+    g_realCallk  = reinterpret_cast<LuaCallkFn >(GetProcAddress(lua, "lua_callk"));
+    if (!g_realPcallk || !g_realCallk) { g_realPcallk = nullptr; g_realCallk = nullptr; return false; }
+
+    if (!HookImport("Lua5.3.3r.dll", "lua_pcallk", reinterpret_cast<void*>(&HookedPcallk)))
+        return false;
+    if (!HookImport("Lua5.3.3r.dll", "lua_callk", reinterpret_cast<void*>(&HookedCallk))) {
         // Half a gate is worse than none: put the first hook back.
         HookImport("Lua5.3.3r.dll", "lua_pcallk", reinterpret_cast<void*>(g_realPcallk));
-        g_realPcallk = nullptr;
         return false;
     }
     return true;

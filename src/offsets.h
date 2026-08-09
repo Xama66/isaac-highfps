@@ -48,6 +48,21 @@ inline constexpr uintptr_t kEntTimeScale   = 0x39C;  // float, ctor-init 1.0 at 
 inline constexpr uint64_t kFlagNoInterpolate      = 1ull << 1;
 inline constexpr uint64_t kFlagInterpolationUpdate= 1ull << 14;
 
+// ------------------------------------------------------- room camera
+// The camera is a SEPARATE 0x94-byte object, not inline in the Game object - which is why
+// scanning the Game object for it turned up nothing. It is reached Game -> Room -> Camera:
+//   Room   = *(Game + 0x18300)   the same pointer the entity list is walked through
+//   Camera = *(Room + 0x11F8)    Room::_Camera, from REPENTOGON's Room.zhl
+//   pos    =  Camera + 0x60      the render position, a float2
+// [LIVE] verified in the running game: Camera+0x60/+0x64 read back the exact player position
+// and scrolled with movement; Camera+0x8C is _shouldOverride (matches REPENTOGON's Camera.zhl)
+// and Camera+0x90 is the 0.1 ease factor. It is written at 60 Hz (Camera::DoUpdate) and read
+// by the render every frame, so uncapped it holds for three frames and then jumps - exactly
+// the big-room judder.
+inline constexpr uintptr_t kRoomInGame   = 0x18300;  // [LIVE] Game -> current Room*
+inline constexpr uintptr_t kCameraInRoom = 0x11F8;   // [SIG] Room::_Camera (Room.zhl)
+inline constexpr uintptr_t kCamPosition  = 0x60;     // [LIVE] Camera render position, float2
+
 // Entity vtable layout. Slot 4 is the render-preview step; REPENTOGON's own
 // source marks it `skip; // Interpolate`.
 inline constexpr int kVtUpdate      = 3;   // +0x0C
