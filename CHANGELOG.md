@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.12.0
+
+**The big-room shiver is fixed.** Walking through a room large enough to scroll made Isaac
+himself tremble while everything around him moved smoothly — only him, only while moving,
+only while the camera scrolled. Two separate causes, and both had to fall.
+
+The first: the mod was smoothing the wrong field. What we previewed each frame was the
+camera's position — but that value is only the camera's internal focus. Once per 60 Hz
+frame the engine maps it through the world-to-screen transform, clamps it to the room, and
+stores the result in the room's scroll offset, and it is THAT field every sprite draw
+actually adds. Our per-frame camera writes never reached the screen: the scroll offset
+froze for three rendered frames while the player's position advanced on every one, so he
+crept forward and snapped back sixty times a second. The preview now samples, advances and
+rolls back the scroll offset itself — the value the renderer consumes — so the scroll
+finally moves at the full frame rate. (Proving this took measuring the field's update
+cadence in the running game: 60 Hz, no matter what we wrote into the camera. A lesson worth
+the price: never assume the field you write is the field the renderer reads.)
+
+The second: the renderer quantises every sprite's position term to the render-target pixel
+grid BEFORE adding the scroll offset. Advancing the offset by the player's raw sub-frame
+movement would therefore hold his true position while his drawn position kept stepping
+whole pixels each time his world position crossed a grid line — a one-pixel sawtooth
+against a smooth background, visible precisely because a screen-locked sprite has no
+motion of its own to hide it. The offset therefore carries the SNAPPED player term,
+anchored so that staircase and ramp step in the same instant: the drawn player holds one
+render-target pixel exactly, and the background scrolls in whole pixels at the full frame
+rate — the finest motion a pixel-snapped world can show.
+
+**A per-frame diagnostic dump.** `Diag = 1` in the ini logs, for every rendered frame, the
+exact player/scroll state the renderer is about to read. It exists because probing the
+game from outside answers a different question: an external reader races the mod's own
+write sequence and mostly catches the sub-millisecond windows between two writes. Off by
+default; costs log I/O when on.
+
 ## v0.11.0
 
 **A second name to load under.** No log file and no change in frame rate means the loader never

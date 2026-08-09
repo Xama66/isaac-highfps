@@ -61,7 +61,30 @@ inline constexpr uint64_t kFlagInterpolationUpdate= 1ull << 14;
 // the big-room judder.
 inline constexpr uintptr_t kRoomInGame   = 0x18300;  // [LIVE] Game -> current Room*
 inline constexpr uintptr_t kCameraInRoom = 0x11F8;   // [SIG] Room::_Camera (Room.zhl)
-inline constexpr uintptr_t kCamPosition  = 0x60;     // [LIVE] Camera render position, float2
+inline constexpr uintptr_t kCamPosition  = 0x60;     // [LIVE] Camera focus position, float2
+
+// What the renderer ACTUALLY consumes. Camera+0x60 is only the camera's own focus
+// state: once per 60 Hz frame Camera::DoUpdate (0x9437E0 -> 0x943830) maps it through
+// the same 0.65 world->screen transform the sprites use, clamps it to the room, and
+// stores the result here - and every sprite draw adds THIS field, post-snap
+// (Room::Render 0x80F200 passes &Room+0x1204 into every Entity::Render).
+// [LIVE] proven by cadence: this field steps at exactly 60 Hz while our Camera+0x60
+// previews ran at 180 - which is why previewing the camera field never reached the
+// screen, and why the extrapolated player sawtoothed against the frozen scroll.
+inline constexpr uintptr_t kRoomScrollOfs = 0x1204;  // [VER]+[LIVE] float2, screen units
+
+// ------------------------------------------------- render pixel snapping
+// The world->screen mapping every sprite renderer inlines ([VER] three copies in
+// Entity_Player::Render 0x78CA00, more in Room::Render 0x80F200):
+//   screen = floor(((world - 60|140) * 0.65 + (ortho - 338|182) * 0.5) * s + 0.5) / s
+//          + scrollOffset
+// with s = *kSnapScaleA * *kSnapScaleB ([LIVE] 1.0 * 2.0 = 2 RT pixels per screen unit)
+// and scrollOffset = Room+0x1204/+0x1208, the camera-derived term - added AFTER the
+// snap. The position term is therefore quantised to the render-target pixel grid
+// independently of the camera, which is what makes a screen-locked sprite oscillate
+// one RT pixel against a smoothly scrolling background (the big-room walk shiver).
+inline constexpr uintptr_t kSnapScaleA = 0x00BF941C;  // [VER]+[LIVE] float 1.0
+inline constexpr uintptr_t kSnapScaleB = 0x00BF93E8;  // [VER]+[LIVE] float 2.0
 
 // Entity vtable layout. Slot 4 is the render-preview step; REPENTOGON's own
 // source marks it `skip; // Interpolate`.

@@ -30,3 +30,7 @@ LuaOverlay = 1
 ; Per-second timings and hitch reports in %TEMP%\isaac-highfps.log.
 ; Leave it on. It's what makes a bug report worth anything.
 Log = 1
+
+; Dumps the player/scroll state of every rendered frame into the log. Only useful when
+; someone is hunting a stutter with you; it writes a lot. Leave it off.
+Diag = 0

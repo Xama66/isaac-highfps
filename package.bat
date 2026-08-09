@@ -3,7 +3,7 @@ rem Assembles the shippable download: release\isaac-highfps-<ver>.zip
 rem The Workshop companion is maintained in the game's mods folder, not here.
 setlocal
 cd /d "%~dp0"
-set VER=0.11.0
+set VER=0.12.0
 
 call "%~dp0build.bat" || exit /b 1
 
