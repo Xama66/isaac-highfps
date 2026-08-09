@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.13.0
+
+**The companion can now tell you the DLL is outdated.** The two halves of this mod age
+differently: the Workshop part updates itself, the native part is installed by hand and
+then silently falls behind. The DLL now publishes its release version into the Lua state
+(`HIGH_FPS_VERSION`), and the companion — which is re-uploaded with every native release
+and therefore knows the newest one — shows a short fortune at run start when the installed
+DLL is older. Builds before 0.13.0 never published a version, so its absence identifies
+them exactly and the notice covers them too.
+
+The version string itself now lives in one place, `src/version.h`: the DLL publishes it,
+package.bat names the zip after it, and package.bat reminds us to bump the companion —
+because a version scheme where the two halves can drift apart quietly is how the previous
+"detected by counting callbacks" scheme died.
+
+**The companion no longer cries wolf.** "High FPS is not installed" could appear although
+the DLL was running: the native part announces itself on its first Lua dispatch, which on
+a slow disk lands seconds after mods have loaded, and the companion believed whatever it
+saw first. It now waits a few seconds before showing the launch hint, re-checks at the
+moment the run-start notice would fire instead of trusting a snapshot, and cancels any
+queued notice the instant the native part appears.
+
 ## v0.12.0
 
 **The big-room shiver is fixed.** Walking through a room large enough to scroll made Isaac

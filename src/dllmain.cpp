@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "offsets.h"
+#include "version.h"
 
 namespace {
 
@@ -1794,6 +1795,7 @@ using LuaGettopFn  = int (__cdecl*)(void*);
 using LuaSettopFn  = void(__cdecl*)(void*, int);
 using LuaPushnilFn = void(__cdecl*)(void*);
 using LuaPushIntFn = void(__cdecl*)(void*, intptr_t);
+using LuaPushStrFn = const char*(__cdecl*)(void*, const char*);
 using LuaSetGlobalFn = void(__cdecl*)(void*, const char*);
 using LuaPcallkFn  = int (__cdecl*)(void*, int, int, int, intptr_t, void*);
 using LuaCallkFn   = void(__cdecl*)(void*, int, int, intptr_t, void*);
@@ -1802,6 +1804,7 @@ LuaGettopFn  g_luaGettop  = nullptr;
 LuaSettopFn  g_luaSettop  = nullptr;
 LuaPushnilFn g_luaPushnil = nullptr;
 LuaPushIntFn g_luaPushInt = nullptr;
+LuaPushStrFn g_luaPushStr = nullptr;
 LuaSetGlobalFn g_luaSetGlobal = nullptr;
 LuaPcallkFn  g_realPcallk = nullptr;
 LuaCallkFn   g_realCallk  = nullptr;
@@ -1861,6 +1864,13 @@ void PublishPresence(void* L) {
         g_publishedRate = -1;               // force the rate out again for the new VM
         g_luaPushInt(L, kNativeApiVersion);
         g_luaSetGlobal(L, "HIGH_FPS_NATIVE");
+        // The release version, so the auto-updating Workshop companion can tell the user
+        // when this hand-installed DLL has fallen behind. Absent on builds before 0.13.0,
+        // which is itself the information "0.12.0 or older".
+        if (g_luaPushStr) {
+            g_luaPushStr(L, HIGHFPS_VERSION);
+            g_luaSetGlobal(L, "HIGH_FPS_VERSION");
+        }
     }
     const LONG rate = g_pushRate;
     if (rate != g_publishedRate) {
@@ -1891,6 +1901,7 @@ bool InstallLuaGate() {
     if (!g_luaGettop || !g_luaSettop || !g_luaPushnil) return false;
     // Optional: without these the gate still works, mods just cannot see that we are here.
     g_luaPushInt   = reinterpret_cast<LuaPushIntFn  >(GetProcAddress(lua, "lua_pushinteger"));
+    g_luaPushStr   = reinterpret_cast<LuaPushStrFn  >(GetProcAddress(lua, "lua_pushstring"));
     g_luaSetGlobal = reinterpret_cast<LuaSetGlobalFn>(GetProcAddress(lua, "lua_setglobal"));
     if (!g_luaPushInt || !g_luaSetGlobal)
         Log("[warn] lua_pushinteger/lua_setglobal missing - mods cannot detect the native part");
