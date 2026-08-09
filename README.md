@@ -10,9 +10,9 @@ Built for build v1.9.7.17 (`isaac-ng.exe`, 32-bit). On a build it does not recog
 nothing at all, see *Safety* below.
 
 > **Beta.** Entity motion is verified: 180 FPS with the logic tick provably unchanged at 30/s.
-> The camera is not. The room scroll offset still isn't interpolated, so if the camera judders
-> while everything in it moves smoothly, that's why. Known gap, not a mystery. Please report it
-> if you hit it.
+> Since v0.12.0 the room scroll moves at the full frame rate too, and the player holds his
+> pixel exactly while the room scrolls past him. If something still judders, please report it
+> — `Diag = 1` in the ini records what a report needs.
 
 ## Install
 
@@ -70,11 +70,12 @@ download, but the native part gets installed by hand.
 
 ## For mod authors
 
-Two globals are published into the Lua state while this is running:
+Three globals are published into the Lua state while this is running:
 
 ```lua
-HIGH_FPS_NATIVE  -- api version, absent when the native component isn't there
-HIGH_FPS_RATE    -- frames per second measured over the last second
+HIGH_FPS_NATIVE   -- api version, absent when the native component isn't there
+HIGH_FPS_VERSION  -- release version, e.g. "0.13.0"; absent means 0.12.0 or older
+HIGH_FPS_RATE     -- frames per second measured over the last second
 ```
 
 Read them per frame rather than once at load, since they appear on the first dispatch and that
@@ -96,6 +97,7 @@ MaxFps            = 0   ; 0 = whatever the display allows; otherwise a cap, e.g.
 LuaVanillaCadence = 1   ; hold the mod render pass at 60 Hz, see Mod compatibility
 LuaOverlay        = 1   ; composite what mods draw onto every frame
 Log               = 1   ; writes %TEMP%\isaac-highfps.log
+Diag              = 0   ; per-frame render-state dump into the log, for stutter reports
 ```
 
 The log goes next to the DLL if `%TEMP%` isn't writable. "No log" and "the DLL never loaded" are
